@@ -179,7 +179,7 @@ class Image(ItemBase):
 
     def affine(self, func:AffineFunc, *args, **kwargs)->'Image':
         "Equivalent to `image.affine_mat = image.affine_mat @ func()`."
-        m = tensor(func(*args, **kwargs)).to(self.device)
+        m = tensor(func(*args, **kwargs)).to(self.device).float()
         self.affine_mat = self.affine_mat @ m
         return self
 
@@ -241,13 +241,18 @@ class ImageSegment(Image):
                         interpolation='nearest', alpha=alpha, vmin=0, **kwargs)
         if title: ax.set_title(title)
 
+    def save(self, fn:PathOrStr):
+        "Save the image segment to `fn`."
+        x = image2np(self.data).astype(np.uint8)
+        PIL.Image.fromarray(x).save(fn)
+
     def reconstruct(self, t:Tensor): return ImageSegment(t)
 
 class ImagePoints(Image):
     "Support applying transforms to a `flow` of points."
     def __init__(self, flow:FlowField, scale:bool=True, y_first:bool=True):
         if scale: flow = scale_flow(flow)
-        if y_first: flow.flow = flow.flow.flip(1)
+        if y_first: flow.flow = flow.flow.flip(1).float()
         self._flow = flow
         self._affine_mat = None
         self.flow_func = []
@@ -427,7 +432,8 @@ def show_image(img:Image, ax:plt.Axes=None, figsize:tuple=(3,3), hide_axis:bool=
                 alpha:float=None, **kwargs)->plt.Axes:
     "Display `Image` in notebook."
     if ax is None: fig,ax = plt.subplots(figsize=figsize)
-    ax.imshow(image2np(img.data), cmap=cmap, alpha=alpha, **kwargs)
+    xtr = dict(cmap=cmap, alpha=alpha, **kwargs)
+    ax.imshow(image2np(img.data), **xtr) if (hasattr(img, 'data')) else ax.imshow(img, **xtr)
     if hide_axis: ax.axis('off')
     return ax
 
@@ -532,15 +538,17 @@ def _grid_sample(x:TensorImage, coords:FlowField, mode:str='bilinear', padding_m
         d = min(x.shape[1]/coords.shape[1], x.shape[2]/coords.shape[2])/2
         # If we're resizing up by >200%, and we're zooming less than that, interpolate first
         if d>1 and d>z: x = F.interpolate(x[None], scale_factor=1/d, mode='area')[0]
-    return F.grid_sample(x[None], coords, mode=mode, padding_mode=padding_mode)[0]
+    kwargs = {'mode': mode, 'padding_mode': padding_mode}
+    if torch.__version__ > "1.2.0": kwargs['align_corners'] = True
+    return F.grid_sample(x[None], coords, **kwargs)[0]
 
 def _affine_grid(size:TensorImageSize)->FlowField:
     size = ((1,)+size)
     N, C, H, W = size
     grid = FloatTensor(N, H, W, 2)
-    linear_points = torch.linspace(-1, 1, W) if W > 1 else tensor([-1])
+    linear_points = torch.linspace(-1, 1, W) if W > 1 else tensor([-1.])
     grid[:, :, :, 0] = torch.ger(torch.ones(H), linear_points).expand_as(grid[:, :, :, 0])
-    linear_points = torch.linspace(-1, 1, H) if H > 1 else tensor([-1])
+    linear_points = torch.linspace(-1, 1, H) if H > 1 else tensor([-1.])
     grid[:, :, :, 1] = torch.ger(linear_points, torch.ones(W)).expand_as(grid[:, :, :, 1])
     return FlowField(size[2:], grid)
 

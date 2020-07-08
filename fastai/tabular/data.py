@@ -3,11 +3,9 @@ from ..torch_core import *
 from .transform import *
 from ..basic_data import *
 from ..data_block import *
-from ..basic_train import *
-from .models import *
 from pandas.api.types import is_numeric_dtype, is_categorical_dtype
 
-__all__ = ['TabularDataBunch', 'TabularLine', 'TabularList', 'TabularProcessor', 'tabular_learner']
+__all__ = ['TabularDataBunch', 'TabularLine', 'TabularList', 'TabularProcessor']
 
 OptTabTfms = Optional[Collection[TabularProc]]
 
@@ -91,7 +89,7 @@ class TabularDataBunch(DataBunch):
                 device:torch.device=None, collate_fn:Callable=data_collate, no_check:bool=False)->DataBunch:
         "Create a `DataBunch` from `df` and `valid_idx` with `dep_var`. `kwargs` are passed to `DataBunch.create`."
         cat_names = ifnone(cat_names, []).copy()
-        cont_names = ifnone(cont_names, list(set(df)-set(cat_names)-{dep_var}))
+        cont_names = ifnone(cont_names, list(set(df)-set(cat_names)-set(dep_var)))
         procs = listify(procs)
         src = (TabularList.from_df(df, path=path, cat_names=cat_names, cont_names=cont_names, procs=procs)
                            .split_by_idx(valid_idx))
@@ -148,7 +146,7 @@ class TabularList(ItemList):
             items.append(res)
         items = np.array(items)
         df = pd.DataFrame({n:items[:,i] for i,n in enumerate(names)}, columns=names)
-        with pd.option_context('display.max_colwidth', -1):
+        with pd.option_context('display.max_colwidth', pd_max_colwidth()):
             display(HTML(df.to_html(index=False)))
 
     def show_xyzs(self, xs, ys, zs):
@@ -165,14 +163,5 @@ class TabularList(ItemList):
             items.append(res)
         items = np.array(items)
         df = pd.DataFrame({n:items[:,i] for i,n in enumerate(names)}, columns=names)
-        with pd.option_context('display.max_colwidth', -1):
+        with pd.option_context('display.max_colwidth', pd_max_colwidth()):
             display(HTML(df.to_html(index=False)))
-
-def tabular_learner(data:DataBunch, layers:Collection[int], emb_szs:Dict[str,int]=None, metrics=None,
-        ps:Collection[float]=None, emb_drop:float=0., y_range:OptRange=None, use_bn:bool=True, **learn_kwargs):
-    "Get a `Learner` using `data`, with `metrics`, including a `TabularModel` created using the remaining params."
-    emb_szs = data.get_emb_szs(ifnone(emb_szs, {}))
-    model = TabularModel(emb_szs, len(data.cont_names), out_sz=data.c, layers=layers, ps=ps, emb_drop=emb_drop,
-                         y_range=y_range, use_bn=use_bn)
-    return Learner(data, model, metrics=metrics, **learn_kwargs)
-

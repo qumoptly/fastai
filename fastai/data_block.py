@@ -10,7 +10,7 @@ __all__ = ['ItemList', 'CategoryList', 'MultiCategoryList', 'MultiCategoryProces
 def _decode(df):
     return np.array([[df.columns[i] for i,t in enumerate(x) if t==1] for x in df.values], dtype=np.object)
 
-def _maybe_squeeze(arr): return (arr if is1d(arr) else np.squeeze(arr))
+def _maybe_squeeze(arr): return arr if is1d(arr) else (np.array(arr).ravel() if np.array(arr).shape == () else np.squeeze(arr))
 
 def _path_to_same_str(p_fn):
     "path -> str, but same on nt+posix, for alpha-sort only"
@@ -27,15 +27,16 @@ def _get_files(parent, p, f, extensions):
            and (extensions is None or f'.{o.split(".")[-1].lower()}' in low_extensions)]
     return res
 
-def get_files(path:PathOrStr, extensions:Collection[str]=None, recurse:bool=False,
-              include:Optional[Collection[str]]=None, presort:bool=False)->FilePathList:
+def get_files(path:PathOrStr, extensions:Collection[str]=None, recurse:bool=False, exclude:Optional[Collection[str]]=None,
+              include:Optional[Collection[str]]=None, presort:bool=False, followlinks:bool=False)->FilePathList:
     "Return list of files in `path` that have a suffix in `extensions`; optionally `recurse`."
     if recurse:
         res = []
-        for i,(p,d,f) in enumerate(os.walk(path)):
+        for i,(p,d,f) in enumerate(os.walk(path, followlinks=followlinks)):
             # skip hidden dirs
-            if include is not None and i==0:  d[:] = [o for o in d if o in include]
-            else:                             d[:] = [o for o in d if not o.startswith('.')]
+            if include is not None and i==0:   d[:] = [o for o in d if o in include]
+            elif exclude is not None and i==0: d[:] = [o for o in d if o not in exclude]
+            else:                              d[:] = [o for o in d if not o.startswith('.')]
             res += _get_files(path, p, f, extensions)
         if presort: res = sorted(res, key=lambda p: _path_to_same_str(p), reverse=False)
         return res
@@ -96,6 +97,7 @@ class ItemList():
 
     def reconstruct(self, t:Tensor, x:Tensor=None):
         "Reconstruct one of the underlying item for its data `t`."
+        if not hasattr(self[0], 'reconstruct'): return t
         return self[0].reconstruct(t,x) if has_arg(self[0].reconstruct, 'x') else self[0].reconstruct(t)
 
     def new(self, items:Iterator, processor:PreProcessors=None, **kwargs)->'ItemList':
@@ -119,19 +121,22 @@ class ItemList():
         else: return self.new(self.items[idxs], inner_df=index_row(self.inner_df, idxs))
 
     @classmethod
-    def from_folder(cls, path:PathOrStr, extensions:Collection[str]=None, recurse:bool=True,
+    def from_folder(cls, path:PathOrStr, extensions:Collection[str]=None, recurse:bool=True, exclude:Optional[Collection[str]]=None,
                     include:Optional[Collection[str]]=None, processor:PreProcessors=None, presort:Optional[bool]=False, **kwargs)->'ItemList':
         """Create an `ItemList` in `path` from the filenames that have a suffix in `extensions`.
         `recurse` determines if we search subfolders."""
         path = Path(path)
-        return cls(get_files(path, extensions, recurse=recurse, include=include, presort=presort), path=path, processor=processor, **kwargs)
+        assert path.is_dir() and path.exists(), f"{path} is not a valid directory."
+        return cls(get_files(path, extensions, recurse=recurse, exclude=exclude, include=include, presort=presort), 
+                   path=path, processor=processor, **kwargs)
 
     @classmethod
     def from_df(cls, df:DataFrame, path:PathOrStr='.', cols:IntsOrStrs=0, processor:PreProcessors=None, **kwargs)->'ItemList':
         "Create an `ItemList` in `path` from the inputs in the `cols` of `df`."
         inputs = df.iloc[:,df_names_to_idx(cols, df)]
         assert not inputs.isna().any().any(), f"You have NaN values in column(s) {cols} of your dataframe, please fix it."
-        res = cls(items=_maybe_squeeze(inputs.values), path=path, inner_df=df, processor=processor, **kwargs)
+        items = _maybe_squeeze(inputs.values) if len(df) > 1 else (inputs.values[0] if not isinstance(cols, Collection) or len(cols) == 1 else inputs.values)
+        res = cls(items=items, path=path, inner_df=df, processor=processor, **kwargs)
         return res
 
     @classmethod
@@ -257,7 +262,9 @@ class ItemList():
         if label_cls is not None:               return label_cls
         if self.label_cls is not None:          return self.label_cls
         if label_delim is not None:             return MultiCategoryList
-        it = index_row(labels,0)
+        try: it = index_row(labels,0)
+        except: raise Exception("""Can't infer the type of your targets. 
+It's either because your data source is empty or because your labelling function raised an error.""")
         if isinstance(it, (float, np.float32)): return FloatList
         if isinstance(try_int(it), (str, Integral)):  return CategoryList
         if isinstance(it, Collection):          return MultiCategoryList
@@ -692,7 +699,7 @@ class LabelList(Dataset):
         if state.get('normalize', False): res.normalize = state['normalize']
         return res
 
-    def process(self, xp:PreProcessor=None, yp:PreProcessor=None, name:str=None):
+    def process(self, xp:PreProcessor=None, yp:PreProcessor=None, name:str=None, max_warn_items:int=5):
         "Launch the processing on `self.x` and `self.y` with `xp` and `yp`."
         self.y.process(yp)
         if getattr(self.y, 'filter_missing_y', False):
@@ -704,8 +711,8 @@ class LabelList(Dataset):
                 for p in self.y.processor:
                     if len(getattr(p, 'warns', [])) > 0:
                         warnings = list(set(p.warns))
-                        self.warn += ', '.join(warnings[:5])
-                        if len(warnings) > 5: self.warn += "..."
+                        self.warn += ', '.join(warnings[:max_warn_items])
+                        if len(warnings) > max_warn_items: self.warn += "..."
                     p.warns = []
                 self.x,self.y = self.x[~filt],self.y[~filt]
         self.x.process(xp)

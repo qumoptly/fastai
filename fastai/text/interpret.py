@@ -31,21 +31,20 @@ def _eval_dropouts(mod):
         module_name =  mod.__class__.__name__
         if 'Dropout' in module_name or 'BatchNorm' in module_name: mod.training = False
         for module in mod.children(): _eval_dropouts(module)
-            
+
 class TextClassificationInterpretation(ClassificationInterpretation):
     """Provides an interpretation of classification based on input sensitivity.
     This was designed for AWD-LSTM only for the moment, because Transformer already has its own attentional model.
     """
 
     def __init__(self, learn: Learner, preds: Tensor, y_true: Tensor, losses: Tensor, ds_type: DatasetType = DatasetType.Valid):
-        super(TextClassificationInterpretation, self).__init__(learn,preds,y_true,losses,ds_type)
+        super().__init__(learn,preds,y_true,losses,ds_type)
         self.model = learn.model
 
     @classmethod
-    def from_learner(cls, learn: Learner,  ds_type:DatasetType=DatasetType.Valid):
+    def from_learner(cls, learn: Learner,  ds_type:DatasetType=DatasetType.Valid, activ:nn.Module=None):
         "Gets preds, y_true, losses to construct base class from a learner"
-        preds_res = learn.get_preds(ds_type=ds_type, with_loss=True, ordered=True)
-        return cls(learn, *preds_res)
+        return cls(learn, *learn.get_preds(ds_type=ds_type, activ=activ, with_loss=True, ordered=True), ds_type=ds_type)
 
     def intrinsic_attention(self, text:str, class_id:int=None):
         """Calculate the intrinsic attention of the input w.r.t to an output `class_id`, or the classification given by the model if `None`.
@@ -64,7 +63,7 @@ class TextClassificationInterpretation(ClassificationInterpretation):
         cl[0][class_id].backward()
         attn = emb.grad.squeeze().abs().sum(dim=-1)
         attn /= attn.max()
-        tokens = self.data.single_ds.reconstruct(ids[0])
+        tokens = self.data.single_ds.reconstruct(ids[0].cpu())
         return tokens, attn
 
     def html_intrinsic_attention(self, text:str, class_id:int=None, **kwargs)->str:
@@ -96,5 +95,5 @@ class TextClassificationInterpretation(ClassificationInterpretation):
         items = np.array(items)
         names = ['Text', 'Prediction', 'Actual', 'Loss', 'Probability']
         df = pd.DataFrame({n:items[:,i] for i,n in enumerate(names)}, columns=names)
-        with pd.option_context('display.max_colwidth', -1):
+        with pd.option_context('display.max_colwidth', pd_max_colwidth()):
             display(HTML(df.to_html(index=False)))

@@ -75,7 +75,7 @@ class GANTrainer(LearnerCallback):
                  show_img:bool=True):
         super().__init__(learn)
         self.switch_eval,self.clip,self.beta,self.gen_first,self.show_img = switch_eval,clip,beta,gen_first,show_img
-        self.generator,self.critic = self.model.generator,self.model.critic
+        self.generator,self.critic,self.switch_model = self.model.generator,self.model.critic,self.model.switch
 
     def _set_trainable(self):
         train_model = self.generator if     self.gen_mode else self.critic
@@ -110,11 +110,12 @@ class GANTrainer(LearnerCallback):
         "Clamp the weights with `self.clip` if it's not None, return the correct input."
         if self.clip is not None:
             for p in self.critic.parameters(): p.data.clamp_(-self.clip, self.clip)
+        if last_input.dtype == torch.float16: last_target = to_half(last_target)
         return {'last_input':last_input,'last_target':last_target} if self.gen_mode else {'last_input':last_target,'last_target':last_input}
 
     def on_backward_begin(self, last_loss, last_output, **kwargs):
         "Record `last_loss` in the proper list."
-        last_loss = last_loss.detach().cpu()
+        last_loss = last_loss.float().detach().cpu()
         if self.gen_mode:
             self.smoothenerG.add_value(last_loss)
             self.glosses.append(self.smoothenerG.smooth)
@@ -122,7 +123,11 @@ class GANTrainer(LearnerCallback):
         else:
             self.smoothenerC.add_value(last_loss)
             self.closses.append(self.smoothenerC.smooth)
-
+    
+    def on_batch_end(self, **kwargs):
+        self.opt_critic.zero_grad()
+        self.opt_gen.zero_grad()
+    
     def on_epoch_begin(self, epoch, **kwargs):
         "Put the critic or the generator back to eval if necessary."
         self.switch(self.gen_mode)
@@ -145,7 +150,7 @@ class GANTrainer(LearnerCallback):
         self.gen_mode = (not self.gen_mode) if gen_mode is None else gen_mode
         self.opt.opt = self.opt_gen.opt if self.gen_mode else self.opt_critic.opt
         self._set_trainable()
-        self.model.switch(gen_mode)
+        self.switch_model(gen_mode)
         self.loss_func.switch(gen_mode)
 
 class FixedGANSwitcher(LearnerCallback):
@@ -230,7 +235,9 @@ class NoisyItem(ItemBase):
     "An random `ItemBase` of size `noise_sz`."
     def __init__(self, noise_sz): self.obj,self.data = noise_sz,torch.randn(noise_sz, 1, 1)
     def __str__(self):  return ''
-    def apply_tfms(self, tfms, **kwargs): return self
+    def apply_tfms(self, tfms, **kwargs): 
+        for f in listify(tfms): f.resolve()
+        return self
 
 class GANItemList(ImageList):
     "`ItemList` suitable for GANs."
@@ -299,4 +306,4 @@ class AdaptiveLoss(Module):
 def accuracy_thresh_expand(y_pred:Tensor, y_true:Tensor, thresh:float=0.5, sigmoid:bool=True)->Rank0Tensor:
     "Compute accuracy after expanding `y_true` to the size of `y_pred`."
     if sigmoid: y_pred = y_pred.sigmoid()
-    return ((y_pred>thresh)==y_true[:,None].expand_as(y_pred).byte()).float().mean()
+    return ((y_pred>thresh).byte()==y_true[:,None].expand_as(y_pred).byte()).float().mean()
